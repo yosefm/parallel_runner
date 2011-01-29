@@ -107,6 +107,9 @@ class CLIController(cmd.Cmd):
 		results_queue - poll this queue for results.
 		callback - call this when a result arrives from a child process.
 		"""
+		# Thanks to Graham King for the example
+		# http://www.darkcoding.net/software/non-blocking-console-io-is-not-possible/
+		
 		# Save terminal's blocking mode and go non-blocking
 		old_settings = termios.tcgetattr(self._in)
 		tty.setcbreak(self._in.fileno(), termios.TCSANOW)
