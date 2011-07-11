@@ -18,7 +18,6 @@ class PoolWorker(Process):
 		self._t = tasks
 		self._out_q = results_queue
 		self._cmd = command_pipe
-		self._wait = True
 		Process.__init__(self)
 	
 	def run(self):
@@ -27,17 +26,8 @@ class PoolWorker(Process):
 			# Before each simulation, check for orders from the central process
 			if self._cmd.poll():
 				cmd = self._cmd.recv()
-				if cmd == "wait":
-					self._wait = True
-					continue
-				elif cmd == "resume":
-					self._wait = False
-				elif cmd == "end":
+				if cmd == "end":
 					return
-			
-			if self._wait:
-				time.sleep(3)
-				continue
 			
 			res = self.job(self._t.get())
 			if self._out_q is not None:
@@ -55,6 +45,8 @@ class PoolWorker(Process):
 		"""
 		pass
 
+import os
+import signal
 import cmd
 import sys
 import select
@@ -90,13 +82,13 @@ class CLIController(cmd.Cmd):
 	
 	def do_enable(self, who):
 		for proc in self._pl:
-			if proc[0].name == who:
-				proc[1].send('resume')
+			if (proc[0].name == who) or (who == "all"):
+				os.kill(proc[0].pid, signal.SIGCONT)
 	
 	def do_disable(self, who):
 		for proc in self._pl:
-			if proc[0].name == who:
-				proc[1].send('wait')
+			if (proc[0].name == who) or (who == "all"):
+				os.kill(proc[0].pid, signal.SIGSTOP)
 	
 	def listen_loop(self, results_queue=None, callback=None):
 		"""
