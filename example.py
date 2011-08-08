@@ -29,7 +29,6 @@ if __name__ == "__main__":
 		t.start()
 		
 		time.sleep(0.1)
-		pside.send('resume') # Processes start disabled.
 	
 	# Command line that quits when the last process quits.
 	ctrl = CLIController(w)
