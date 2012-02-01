@@ -90,14 +90,17 @@ class CLIController(cmd.Cmd):
 			if (proc[0].name == who) or (who == "all"):
 				os.kill(proc[0].pid, signal.SIGSTOP)
 	
-	def listen_loop(self, results_queue=None, callback=None):
+	def listen_loop(self, results_queue=None, callback=None, comm_callback=None):
 		"""
 		A loop that terminates when no more jobs are being processed,
-		and handles output as it comes.
+		and handles output and process messages as it comes.
 		
 		Arguments:
 		results_queue - poll this queue for results.
 		callback - call this when a result arrives from a child process.
+		comm_callback - call this when a process sends a message on the control
+			pipe. Signature: callback(message). The result is sent back to the 
+			asking process on the command pipe.
 		"""
 		# Thanks to Graham King for the example
 		# http://www.darkcoding.net/software/non-blocking-console-io-is-not-possible/
@@ -128,12 +131,23 @@ class CLIController(cmd.Cmd):
 						inp += c
 					self._out.flush()
 				
+				# Process results as they arrive:
 				if results_queue is not None:
 					try:
 						r = results_queue.get(False)
 						callback(r)
 					except queue.Empty:
 						pass
+                
+				# Communicate with individual processes:
+				# Note that this blocks the loop until results are sent, so
+				# it's not really for long stuff. A non-blocking version is
+				# left for the future.
+				if comm_callback is not None:
+					for proc in self._pl:
+						if proc[1].poll():
+							res = comm_callback(proc[1].recv())
+							proc[1].send(res)
 				
 				# Break if all processes terminated:
 				if len(multiprocessing.active_children()) == 0:
