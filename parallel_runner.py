@@ -45,129 +45,133 @@ class PoolWorker(Process):
 		"""
 		pass
 
-import os
-import signal
-import cmd
-import sys
-import select
-import tty
-import termios
-import Queue as queue # To avoid confusion with multiprocessing.Queue
+import platform
+on_windows = (platform.system() == 'Windows')
 
-class CLIController(cmd.Cmd):
-	sleep_time = 0.1
-	
-	def __init__(self, process_list,
-		completekey=None, stdin=sys.stdin, stdout=sys.stdout):
-		"""
-		process_list - a list of tuples (process, pipe-entrance)
-		completekey, stdin, stdout - passed on to cmd.Cmd
-		"""
-		self._pl = process_list
-		self._in = stdin
-		self._out = stdout
-		cmd.Cmd.__init__(self, completekey, stdin, stdout)
+if not on_windows:
+	import os
+	import signal
+	import cmd
+	import sys
+	import select
+	import tty
+	import termios
+	import Queue as queue # To avoid confusion with multiprocessing.Queue
+
+	class CLIController(cmd.Cmd):
+		sleep_time = 0.1
 		
-	def do_list(self, line):
-		for proc in self._pl:
-			self._out.write(proc[0].name + "\n")
-	
-	def do_quit(self, line):
-		for proc in self._pl:
-			proc[1].send('end')
-	
-	def do_terminate(self, line):
-		for proc in self._pl:
-			proc[0].terminate()
-	
-	def do_enable(self, who):
-		for proc in self._pl:
-			if (proc[0].name == who) or (who == "all"):
-				os.kill(proc[0].pid, signal.SIGCONT)
-	
-	def do_disable(self, who):
-		for proc in self._pl:
-			if (proc[0].name == who) or (who == "all"):
-				os.kill(proc[0].pid, signal.SIGSTOP)
-	
-	def listen_loop(self, results_queue=None, callback=None, comm_callback=None):
-		"""
-		A loop that terminates when no more jobs are being processed,
-		and handles output and process messages as it comes.
+		def __init__(self, process_list,
+			completekey=None, stdin=sys.stdin, stdout=sys.stdout):
+			"""
+			process_list - a list of tuples (process, pipe-entrance)
+			completekey, stdin, stdout - passed on to cmd.Cmd
+			"""
+			self._pl = process_list
+			self._in = stdin
+			self._out = stdout
+			cmd.Cmd.__init__(self, completekey, stdin, stdout)
+			
+		def do_list(self, line):
+			for proc in self._pl:
+				self._out.write(proc[0].name + "\n")
 		
-		Arguments:
-		results_queue - poll this queue for results.
-		callback - call this when a result arrives from a child process.
-		comm_callback - call this when a process sends a message on the control
-			pipe. Signature: callback(message). The result is sent back to the 
-			asking process on the command pipe.
-		"""
-		# Thanks to Graham King for the example
-		# http://www.darkcoding.net/software/non-blocking-console-io-is-not-possible/
+		def do_quit(self, line):
+			for proc in self._pl:
+				proc[1].send('end')
 		
-		# Save terminal's blocking mode and go non-blocking
-		old_settings = termios.tcgetattr(self._in)
-		tty.setcbreak(self._in.fileno(), termios.TCSANOW)
+		def do_terminate(self, line):
+			for proc in self._pl:
+				proc[0].terminate()
 		
-		self._out.write(self.prompt)
-		self._out.flush()
+		def do_enable(self, who):
+			for proc in self._pl:
+				if (proc[0].name == who) or (who == "all"):
+					os.kill(proc[0].pid, signal.SIGCONT)
 		
-		# Just like old-times in BASIC:
-		inp = ''
-		try:
-			while True:
-				has_inp = select.select([self._in], [], [], 0)
-				if self._in in has_inp[0]:
-					# Read char-by-char and show back the typing:
-					c = sys.stdin.read(1)
-					self._out.write(c)
+		def do_disable(self, who):
+			for proc in self._pl:
+				if (proc[0].name == who) or (who == "all"):
+					os.kill(proc[0].pid, signal.SIGSTOP)
+		
+		def listen_loop(self, results_queue=None, callback=None, comm_callback=None):
+			"""
+			A loop that terminates when no more jobs are being processed,
+			and handles output and process messages as it comes.
+			
+			Arguments:
+			results_queue - poll this queue for results.
+			callback - call this when a result arrives from a child process.
+			comm_callback - call this when a process sends a message on the control
+				pipe. Signature: callback(message). The result is sent back to the 
+				asking process on the command pipe.
+			"""
+			# Thanks to Graham King for the example
+			# http://www.darkcoding.net/software/non-blocking-console-io-is-not-possible/
+			
+			# Save terminal's blocking mode and go non-blocking
+			old_settings = termios.tcgetattr(self._in)
+			tty.setcbreak(self._in.fileno(), termios.TCSANOW)
+			
+			self._out.write(self.prompt)
+			self._out.flush()
+			
+			# Just like old-times in BASIC:
+			inp = ''
+			try:
+				while True:
+					has_inp = select.select([self._in], [], [], 0)
+					if self._in in has_inp[0]:
+						# Read char-by-char and show back the typing:
+						c = sys.stdin.read(1)
+						self._out.write(c)
+						
+						# On newline interpret line, otherwise keep accumulating:
+						if c == "\n":
+							self.onecmd(inp)
+							inp = ""
+							self._out.write(self.prompt)
+						else:
+							inp += c
+						self._out.flush()
 					
-					# On newline interpret line, otherwise keep accumulating:
-					if c == "\n":
-						self.onecmd(inp)
-						inp = ""
-						self._out.write(self.prompt)
-					else:
-						inp += c
-					self._out.flush()
-				
-				# Process results as they arrive:
-				if results_queue is not None:
-					try:
-						r = results_queue.get(False)
-						callback(r)
-					except queue.Empty:
-						pass
-                
-				# Communicate with individual processes:
-				# Note that this blocks the loop until results are sent, so
-				# it's not really for long stuff. A non-blocking version is
-				# left for the future.
-				if comm_callback is not None:
-					for proc in self._pl:
-						if proc[1].poll():
-							res = comm_callback(proc[1].recv())
-							proc[1].send(res)
-				
-				# Break if all processes terminated:
-				if len(multiprocessing.active_children()) == 0:
-					break
-				
-				time.sleep(self.sleep_time)
-		finally:
-			# Command-loop terminated, restore terminal settings:
-			termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-		
-		if results_queue is None:
-			return
-		
-		# Keep collecting output after commandline finished.
-		# This will happen if children finished normally, or if 'terminate' was
-		# used while some results weren't handled yet, which is pretty much the
-		# same condition.
-		try:
-			while True:
-				r = results_queue.get(False)
-				callback(r)
-		except queue.Empty:
-			pass
+					# Process results as they arrive:
+					if results_queue is not None:
+						try:
+							r = results_queue.get(False)
+							callback(r)
+						except queue.Empty:
+							pass
+					
+					# Communicate with individual processes:
+					# Note that this blocks the loop until results are sent, so
+					# it's not really for long stuff. A non-blocking version is
+					# left for the future.
+					if comm_callback is not None:
+						for proc in self._pl:
+							if proc[1].poll():
+								res = comm_callback(proc[1].recv())
+								proc[1].send(res)
+					
+					# Break if all processes terminated:
+					if len(multiprocessing.active_children()) == 0:
+						break
+					
+					time.sleep(self.sleep_time)
+			finally:
+				# Command-loop terminated, restore terminal settings:
+				termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+			
+			if results_queue is None:
+				return
+			
+			# Keep collecting output after commandline finished.
+			# This will happen if children finished normally, or if 'terminate' was
+			# used while some results weren't handled yet, which is pretty much the
+			# same condition.
+			try:
+				while True:
+					r = results_queue.get(False)
+					callback(r)
+			except queue.Empty:
+				pass
